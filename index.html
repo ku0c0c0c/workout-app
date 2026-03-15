@@ -99,7 +99,17 @@
     }
     .points-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; }
     .points-text { font-size: 14px; color: #ccc; line-height: 1.7; }
-    .action-row { display: flex; gap: 12px; }
+    .action-row { display: flex; gap: 12px; align-items: center; }
+    .btn-pause {
+      width: 56px; height: 56px; border-radius: 14px; border: 2px solid #2a2a3e;
+      background: #1a1a2e; color: #fff; font-size: 22px; cursor: pointer; flex-shrink: 0;
+    }
+    .btn-pause:active { background: #222; }
+    .btn-end-small {
+      display: block; width: 100%; text-align: center; margin-top: 14px;
+      background: none; border: none; color: #444; font-size: 13px; cursor: pointer; padding: 4px;
+    }
+    .btn-end-small:active { color: #ef4444; }
     .btn-skip {
       padding: 17px 18px; border-radius: 14px; border: 2px solid #2a2a3e;
       background: #1a1a2e; color: #666; font-size: 15px; font-weight: 600; cursor: pointer;
@@ -265,8 +275,10 @@
     </div>
     <div class="action-row">
       <button class="btn-skip" onclick="skipExercise()">スキップ</button>
+      <button class="btn-pause" id="pause-btn" style="display:none" onclick="togglePause()">⏸</button>
       <button class="btn-done" id="done-btn" onclick="completeSet()">完了</button>
     </div>
+    <button class="btn-end-small" onclick="confirmEnd()">ワークアウトを終了する</button>
   </div>
 </div>
 
@@ -287,6 +299,8 @@
     <div class="rest-next-label">次</div>
     <div class="rest-next-name" id="rest-next-name"></div>
     <button class="btn-skip-rest" onclick="skipRest()">スキップ</button>
+    <button class="btn-pause" id="rest-pause-btn" style="width:100%; margin-top:12px; border-radius:14px;" onclick="togglePause()">⏸</button>
+    <button class="btn-end-small" onclick="confirmEnd()">ワークアウトを終了する</button>
   </div>
 </div>
 
@@ -338,6 +352,9 @@ async function loadSheetData() {
 // ─── STATE ──────────────────────────────────────────────────────────
 let pinVal = '', pinSetupFirst = '', pinMode = 'enter'; // enter | setup | confirm
 let currentDay = '', todayList = [], exIdx = 0, setIdx = 0, tick = null, repTick = null;
+let paused = false, pausedType = null; // 'timed' | 'count' | null
+let timerRemaining = 0, timerTotal = 0, timerNumId = '', timerCircId = '', timerOnDone = null;
+let countParams = null, countIdx = 0;
 
 // ─── PIN ─────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -487,13 +504,20 @@ function renderExercise() {
   const cs = document.getElementById('count-section');
   const db = document.getElementById('done-btn');
 
+  paused = false;
+  const pb = document.getElementById('pause-btn');
+  pb.textContent = '⏸';
+
   if (ex.timed) {
+    pausedType = 'timed'; pb.style.display = 'block';
     ts.style.display = 'block'; cs.style.display = 'none'; db.textContent = '次へ';
     startCountdown('ex-timer-num', 'ex-circle', ex.dur, () => { playBeep(); completeSet(); });
   } else if (ex.speed && ex.reps > 0) {
+    pausedType = 'count'; pb.style.display = 'block';
     ts.style.display = 'none'; cs.style.display = 'block'; db.textContent = 'スキップ';
     startRepCount(ex.reps, ex.sides, ex.speed, () => { playBeep(); completeSet(); });
   } else {
+    pausedType = null; pb.style.display = 'none';
     ts.style.display = 'none'; cs.style.display = 'none'; db.textContent = '完了';
   }
 }
@@ -521,6 +545,9 @@ function skipExercise() { clearTick(); stopCount(); setIdx = 0; exIdx++; renderE
 
 // ─── REST ────────────────────────────────────────────────────────────
 function showRest(duration) {
+  paused = false;
+  pausedType = 'timed';
+  document.getElementById('rest-pause-btn').textContent = '⏸';
   showScreen('rest-screen');
   const nextEx = todayList[exIdx];
   let nextLabel = '完了';
@@ -546,6 +573,36 @@ function showComplete() {
 }
 function goHome() { showScreen('home-screen'); initHome(); }
 
+// ─── PAUSE / END ─────────────────────────────────────────────────────
+function togglePause() {
+  const pb  = document.getElementById('pause-btn');
+  const rpb = document.getElementById('rest-pause-btn');
+  if (paused) {
+    paused = false;
+    if (pb)  pb.textContent  = '⏸';
+    if (rpb) rpb.textContent = '⏸';
+    if (pausedType === 'timed') {
+      startCountdown(timerNumId, timerCircId, timerTotal, timerOnDone, timerRemaining);
+    } else if (pausedType === 'count' && countParams) {
+      startRepCount(countParams.reps, countParams.sides, countParams.speed, countParams.onDone, countIdx);
+    }
+  } else {
+    paused = true;
+    if (pb)  pb.textContent  = '▶';
+    if (rpb) rpb.textContent = '▶';
+    clearTick();
+    stopCount();
+  }
+}
+
+function confirmEnd() {
+  if (confirm('ワークアウトを終了しますか？')) {
+    clearTick(); stopCount();
+    paused = false; pausedType = null;
+    showScreen('home-screen'); initHome();
+  }
+}
+
 // ─── REP COUNT ───────────────────────────────────────────────────────
 let countTick = null;
 
@@ -559,29 +616,25 @@ function buildSequence(reps, sides) {
   return seq;
 }
 
-function startRepCount(reps, sides, speed, onDone) {
-  const ms  = { '速い': 1000, '普通': 2000, '遅い': 3000 }[speed] || 2000;
-  const seq = buildSequence(reps, sides);
-  let idx   = 0;
+function startRepCount(reps, sides, speed, onDone, fromIdx = 0) {
+  countParams = { reps, sides, speed, onDone };
+  const ms    = { '速い': 1000, '普通': 2000, '遅い': 3000 }[speed] || 2000;
+  const seq   = buildSequence(reps, sides);
   const total = sides ? reps * 2 : reps;
+  countIdx    = fromIdx;
 
-  function updateDisplay(val) {
+  function step() {
+    if (countIdx >= seq.length) { stopCount(); onDone(); return; }
+    const val = seq[countIdx];
     const isReverse = (val === '反対');
     document.getElementById('count-num').textContent   = isReverse ? '→' : val;
     document.getElementById('count-total').textContent = `/ ${reps}`;
     const sideEl = document.getElementById('count-side');
-    if (sides) sideEl.textContent = idx <= reps ? '左' : '右';
+    if (sides) sideEl.textContent = countIdx < reps ? '左' : '右';
     else sideEl.textContent = '';
-    const progress = Math.min((idx / total) * 100, 100);
-    document.getElementById('count-bar').style.width = progress + '%';
-  }
-
-  function step() {
-    if (idx >= seq.length) { stopCount(); onDone(); return; }
-    const val = seq[idx];
-    updateDisplay(val);
+    document.getElementById('count-bar').style.width = Math.min((countIdx / total) * 100, 100) + '%';
     playTick();
-    idx++;
+    countIdx++;
   }
 
   step();
@@ -595,13 +648,14 @@ function stopCount() {
 // ─── TIMER ───────────────────────────────────────────────────────────
 const CIRC = 521; // 2π×83
 
-function startCountdown(numId, circId, total, onDone) {
-  let remaining = total;
-  updateRing(numId, circId, remaining, total);
+function startCountdown(numId, circId, total, onDone, fromRemaining = total) {
+  timerNumId = numId; timerCircId = circId; timerTotal = total; timerOnDone = onDone;
+  timerRemaining = fromRemaining;
+  updateRing(numId, circId, timerRemaining, total);
   tick = setInterval(() => {
-    remaining--;
-    updateRing(numId, circId, remaining, total);
-    if (remaining <= 0) { clearTick(); onDone(); }
+    timerRemaining--;
+    updateRing(numId, circId, timerRemaining, total);
+    if (timerRemaining <= 0) { clearTick(); onDone(); }
   }, 1000);
 }
 
