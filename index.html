@@ -112,6 +112,14 @@
     }
     .btn-done:active { opacity: .8; }
 
+    /* ── Count ── */
+    .count-wrap { display: flex; flex-direction: column; align-items: center; margin-bottom: 24px; }
+    .count-side-label { font-size: 18px; font-weight: 700; color: #60a5fa; height: 28px; margin-bottom: 4px; }
+    .count-num { font-size: 80px; font-weight: 900; line-height: 1; color: #fff; }
+    .count-total { font-size: 18px; color: #555; margin-top: 4px; }
+    .count-bar-track { width: 100%; height: 6px; background: #1a1a2e; border-radius: 3px; margin-top: 16px; }
+    .count-bar-fill { height: 100%; background: linear-gradient(90deg,#a78bfa,#60a5fa); border-radius: 3px; transition: width .2s; }
+
     /* ── Rest ── */
     .rest-wrap { text-align: center; width: 100%; max-width: 420px; }
     .rest-label { font-size: 22px; font-weight: 700; color: #60a5fa; margin-bottom: 24px; }
@@ -189,13 +197,10 @@
     <div class="setup-title">⚙️ シート連携</div>
     <div class="setup-desc">
       Google Apps Script のデプロイURLを入力してください。<br>
-      スキップするとアプリ内のデータを使用します。
     </div>
     <input class="setup-input" id="setup-url-input" type="url"
       placeholder="https://script.google.com/macros/s/..." />
     <button class="btn-done" style="width:100%" onclick="saveSheetUrl()">保存して開始</button>
-    <br>
-    <button class="setup-skip" onclick="skipSheetUrl()">スキップ（後で設定）</button>
   </div>
 </div>
 
@@ -231,6 +236,16 @@
     </div>
     <div class="ex-name-big" id="ex-name"></div>
     <div class="ex-sets-big" id="ex-sets"></div>
+    <div id="count-section" style="display:none">
+      <div class="count-wrap">
+        <div class="count-side-label" id="count-side"></div>
+        <div class="count-num" id="count-num">1</div>
+        <div class="count-total" id="count-total"></div>
+        <div class="count-bar-track" style="width:100%">
+          <div class="count-bar-fill" id="count-bar" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
     <div id="timer-section" style="display:none">
       <div class="timer-wrap">
         <div class="timer-ring">
@@ -467,19 +482,26 @@ function renderExercise() {
   if (ex.pts) { pc.style.display = 'block'; document.getElementById('points-text').textContent = ex.pts; }
   else { pc.style.display = 'none'; }
 
-  // timed vs rep
   const ts = document.getElementById('timer-section');
+  const cs = document.getElementById('count-section');
   const db = document.getElementById('done-btn');
+
   if (ex.timed) {
-    ts.style.display = 'block'; db.textContent = '次へ';
+    // ── タイマー種目
+    ts.style.display = 'block'; cs.style.display = 'none'; db.textContent = '次へ';
     startCountdown('ex-timer-num', 'ex-circle', ex.dur, () => { playBeep(); completeSet(); });
+  } else if (ex.speed && ex.reps > 0) {
+    // ── 自動カウント種目
+    ts.style.display = 'none'; cs.style.display = 'block'; db.textContent = 'スキップ';
+    startRepCount(ex.reps, ex.sides, ex.speed, () => { playBeep(); completeSet(); });
   } else {
-    ts.style.display = 'none'; db.textContent = '完了';
+    // ── 手動完了種目
+    ts.style.display = 'none'; cs.style.display = 'none'; db.textContent = '完了';
   }
 }
 
 function completeSet() {
-  clearTick();
+  clearTick(); stopCount();
   const ex = todayList[exIdx];
   setIdx++;
   if (setIdx < ex.sets) {
@@ -497,7 +519,7 @@ function completeSet() {
   }
 }
 
-function skipExercise() { clearTick(); setIdx = 0; exIdx++; renderExercise(); }
+function skipExercise() { clearTick(); stopCount(); setIdx = 0; exIdx++; renderExercise(); }
 
 // ─── REST ────────────────────────────────────────────────────────────
 function showRest(duration) {
@@ -525,6 +547,61 @@ function showComplete() {
     `${names[currentDay] || currentDay}のメニュー完了！`;
 }
 function goHome() { showScreen('home-screen'); initHome(); }
+
+// ─── REP COUNT ───────────────────────────────────────────────────────
+let countTick = null;
+
+function buildSequence(reps, sides) {
+  const seq = [];
+  for (let i = 1; i <= reps; i++) seq.push(String(i));
+  if (sides) {
+    seq.push('反対');
+    for (let i = 1; i <= reps; i++) seq.push(String(i));
+  }
+  return seq;
+}
+
+function startRepCount(reps, sides, speed, onDone) {
+  const ms  = { '速い': 900, '普通': 1400, '遅い': 2200 }[speed] || 1400;
+  const seq = buildSequence(reps, sides);
+  let idx   = 0;
+  const total = sides ? reps * 2 : reps;
+
+  function speak(text) {
+    if (!window.speechSynthesis) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ja-JP';
+    speechSynthesis.speak(u);
+  }
+
+  function updateDisplay(val) {
+    const isReverse = (val === '反対');
+    document.getElementById('count-num').textContent   = isReverse ? '→' : val;
+    document.getElementById('count-total').textContent = `/ ${reps}`;
+    const sideEl = document.getElementById('count-side');
+    if (sides) sideEl.textContent = idx <= reps ? '左' : '右';
+    else sideEl.textContent = '';
+    const progress = Math.min((idx / total) * 100, 100);
+    document.getElementById('count-bar').style.width = progress + '%';
+  }
+
+  function step() {
+    if (idx >= seq.length) { stopCount(); onDone(); return; }
+    const val = seq[idx];
+    updateDisplay(val);
+    speak(val);
+    idx++;
+  }
+
+  step();
+  countTick = setInterval(step, ms);
+}
+
+function stopCount() {
+  if (countTick) { clearInterval(countTick); countTick = null; }
+  if (window.speechSynthesis) speechSynthesis.cancel();
+}
 
 // ─── TIMER ───────────────────────────────────────────────────────────
 const CIRC = 521; // 2π×83
