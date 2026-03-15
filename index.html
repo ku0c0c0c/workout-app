@@ -140,6 +140,21 @@
       background: none; border: none; color: #444; font-size: 22px; cursor: pointer; padding: 4px;
     }
 
+    /* ── Rep Count ── */
+    .count-wrap { display: flex; justify-content: center; margin-bottom: 16px; }
+    .count-circle {
+      width: 190px; height: 190px; border-radius: 50%;
+      border: 8px solid #2a2a3e;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1a1a2e;
+      transition: border-color .12s, box-shadow .12s;
+    }
+    .count-circle.beat { border-color: #a78bfa; box-shadow: 0 0 28px rgba(167,139,250,.45); }
+    .count-num-big { font-size: 58px; font-weight: 800; color: #fff; line-height: 1; }
+    .count-of { font-size: 16px; color: #555; margin-top: 6px; }
+    .speed-tag { text-align: center; font-size: 13px; color: #666; margin-bottom: 20px; }
+    .speed-tag span { color: #a78bfa; font-weight: 600; }
+
     /* ── Complete ── */
     .complete-wrap { text-align: center; }
     .complete-icon { font-size: 72px; margin-bottom: 20px; }
@@ -243,6 +258,15 @@
         </div>
       </div>
     </div>
+    <div id="count-section" style="display:none">
+      <div class="count-wrap">
+        <div class="count-circle" id="count-circle">
+          <div class="count-num-big" id="count-num">0</div>
+          <div class="count-of" id="count-of"></div>
+        </div>
+      </div>
+      <div class="speed-tag" id="speed-tag"></div>
+    </div>
     <div class="set-dots" id="set-dots"></div>
     <div class="points-card" id="points-card" style="display:none">
       <div class="points-label">ポイント</div>
@@ -309,7 +333,8 @@ async function loadSheetData() {
         if (workoutData[d] !== undefined) {
           workoutData[d].push({
             name: ex.name, sets: ex.sets, disp: ex.disp,
-            timed: ex.timed, dur: ex.dur, rest: ex.rest, pts: ex.pts
+            timed: ex.timed, dur: ex.dur, rest: ex.rest, pts: ex.pts,
+            speed: ex.speed || '', reps: ex.reps || 0
           });
         }
       });
@@ -321,7 +346,7 @@ async function loadSheetData() {
 
 // ─── STATE ──────────────────────────────────────────────────────────
 let pinVal = '', pinSetupFirst = '', pinMode = 'enter'; // enter | setup | confirm
-let currentDay = '', todayList = [], exIdx = 0, setIdx = 0, tick = null;
+let currentDay = '', todayList = [], exIdx = 0, setIdx = 0, tick = null, repTick = null;
 
 // ─── PIN ─────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -467,19 +492,28 @@ function renderExercise() {
   if (ex.pts) { pc.style.display = 'block'; document.getElementById('points-text').textContent = ex.pts; }
   else { pc.style.display = 'none'; }
 
-  // timed vs rep
+  // timed vs counted vs rep
   const ts = document.getElementById('timer-section');
+  const cs = document.getElementById('count-section');
   const db = document.getElementById('done-btn');
+  clearRepTick();
   if (ex.timed) {
-    ts.style.display = 'block'; db.textContent = '次へ';
+    ts.style.display = 'block'; cs.style.display = 'none'; db.textContent = '次へ';
     startCountdown('ex-timer-num', 'ex-circle', ex.dur, () => { playBeep(); completeSet(); });
+  } else if (ex.speed && ex.reps > 0) {
+    ts.style.display = 'none'; cs.style.display = 'block'; db.textContent = '完了';
+    document.getElementById('count-num').textContent = '0';
+    document.getElementById('count-of').textContent = `/ ${ex.reps}`;
+    document.getElementById('speed-tag').innerHTML = `テンポ: <span>${ex.speed}</span>`;
+    document.getElementById('count-circle').classList.remove('beat');
+    startRepCount(ex.reps, ex.speed, () => completeSet());
   } else {
-    ts.style.display = 'none'; db.textContent = '完了';
+    ts.style.display = 'none'; cs.style.display = 'none'; db.textContent = '完了';
   }
 }
 
 function completeSet() {
-  clearTick();
+  clearTick(); clearRepTick();
   const ex = todayList[exIdx];
   setIdx++;
   if (setIdx < ex.sets) {
@@ -497,7 +531,7 @@ function completeSet() {
   }
 }
 
-function skipExercise() { clearTick(); setIdx = 0; exIdx++; renderExercise(); }
+function skipExercise() { clearTick(); clearRepTick(); setIdx = 0; exIdx++; renderExercise(); }
 
 // ─── REST ────────────────────────────────────────────────────────────
 function showRest(duration) {
@@ -546,6 +580,43 @@ function updateRing(numId, circId, remaining, total) {
 }
 
 function clearTick() { if (tick) { clearInterval(tick); tick = null; } }
+
+function startRepCount(reps, speed, onDone) {
+  let current = 0;
+  const interval = speed === '遅い' ? 3000 : speed === '速い' ? 1000 : 2000;
+  const circEl = document.getElementById('count-circle');
+  const numEl = document.getElementById('count-num');
+
+  function beat() {
+    current++;
+    numEl.textContent = current;
+    circEl.classList.add('beat');
+    setTimeout(() => circEl.classList.remove('beat'), 200);
+    playTick();
+    if (current >= reps) {
+      clearRepTick();
+      setTimeout(() => { playBeep(); onDone(); }, interval);
+    }
+  }
+  repTick = setInterval(beat, interval);
+}
+
+function clearRepTick() { if (repTick) { clearInterval(repTick); repTick = null; } }
+
+function playTick() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 523; osc.type = 'sine';
+    const t = ctx.currentTime;
+    gain.gain.setValueAtTime(0.18, t);
+    gain.gain.exponentialRampToValueAtTime(0.01, t + 0.09);
+    osc.start(t); osc.stop(t + 0.09);
+  } catch(e) {}
+  if (navigator.vibrate) navigator.vibrate(20);
+}
 
 // ─── SOUND ───────────────────────────────────────────────────────────
 function playBeep() {
